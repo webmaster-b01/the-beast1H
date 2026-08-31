@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 from flask import Flask
 
 # ==========================================================
-# НАСТРОЙКИ (те же, но для 1H)
+# НАСТРОЙКИ
 # ==========================================================
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
@@ -16,7 +16,7 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
 MODEL = "deepseek/deepseek-v4-pro"
 
-# Параметры торговли (как ты выбрал для 1H)
+# Параметры торговли (для сигналов на вход)
 STOP_LOSS_PCT = 2.5   # -2.5% от входа
 TAKE_PROFIT_PCT = 5.0 # +5.0% от входа
 
@@ -43,13 +43,13 @@ SYMBOLS = [
     "API3USDT", "ARUSDT", "JASMYUSDT", "RSRUSDT", "SYNUSDT"
 ]
 
-STATE_FILE = "signal_state_1h.json"  # Отдельный файл, чтобы не конфликтовать с 15M
+STATE_FILE = "signal_state_1h.json"
 DAILY_LIMIT = 20
 COOLDOWN_HOURS = 4
-MIN_INTERVAL_HOURS = 1 # Минимальный интервал между любыми новыми сигналами
+MIN_INTERVAL_HOURS = 1 # Минимальный интервал между сигналами на вход
 
 # ==========================================================
-# КЭШ ДЛЯ НОВОСТЕЙ (ОБНОВЛЕНИЕ КАЖДЫЕ 30 МИНУТ)
+# НОВОСТИ
 # ==========================================================
 NEWS_CACHE = {"last_update": 0, "headlines": [], "sentiment": "Не определён"}
 
@@ -83,18 +83,11 @@ def analyze_news_sentiment(news_text):
     prompt = f"""
 Проанализируй следующие новости криптовалютного рынка:
 {news_text}
-
 Дай краткую оценку: позитивный, нейтральный или негативный фон для рынка.
 Ответь строго одним словом: ПОЗИТИВНЫЙ, НЕЙТРАЛЬНЫЙ или НЕГАТИВНЫЙ.
 """
-
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    data = {
-        "model": MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 100
-    }
-
+    data = {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": 100}
     try:
         resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=30)
         result = resp.json()
@@ -114,20 +107,15 @@ def analyze_news_sentiment(news_text):
 def update_news_cache():
     global NEWS_CACHE
     now = time.time()
-    if now - NEWS_CACHE["last_update"] < 1800:  # 30 минут для 1H бота
+    if now - NEWS_CACHE["last_update"] < 1800:
         return NEWS_CACHE["headlines"], NEWS_CACHE["sentiment"]
-    
     print("📰 Сканирую RSS-ленты для свежих новостей...")
     new_headlines = fetch_rss_headlines()
     if new_headlines:
         news_text = "\n".join(new_headlines)
         print("🧠 Запрашиваю оценку фона у нейросети...")
         sentiment = analyze_news_sentiment(news_text)
-        NEWS_CACHE = {
-            "last_update": now,
-            "headlines": new_headlines,
-            "sentiment": sentiment
-        }
+        NEWS_CACHE = {"last_update": now, "headlines": new_headlines, "sentiment": sentiment}
         print(f"📰 Новости обновлены: {new_headlines}")
         print(f"🧠 Оценка фона: {sentiment}")
     else:
@@ -163,10 +151,7 @@ def get_ticker(symbol):
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            return {
-                'price': float(data['lastPrice']),
-                'volume': float(data['quoteVolume'])
-            }
+            return {'price': float(data['lastPrice']), 'volume': float(data['quoteVolume'])}
         return None
     except:
         return None
@@ -180,7 +165,7 @@ def get_1h_candles(symbol):
             data = resp.json()
             candles = []
             for candle in data:
-                candles.append(float(candle[4]))  # close
+                candles.append(float(candle[4]))
             return candles
         return None
     except:
@@ -203,13 +188,13 @@ def send_telegram(text):
         pass
 
 # ==========================================================
-# СТРАТЕГИЯ "РАБОЧАЯ ЛОШАДКА (1H)"
+# СТРАТЕГИЯ 1: СИГНАЛЬЩИК (ВХОД НА ПЕРЕСЕЧЕНИИ EMA9/EMA21)
 # ==========================================================
 def check_ema_cross():
     if not is_working_hours():
         return
 
-    print("🏇 Сканер (1H): ищу пересечение EMA9/EMA21 на 1-часовом графике...")
+    print("🏇 Сканер (1H): ищу пересечение EMA9/EMA21...")
 
     state = load_state()
     new_state = {}
@@ -241,7 +226,7 @@ def check_ema_cross():
         if sent_in_cycle >= 2:
             break
 
-        candles = get_1h_candles(sym)  # Используем 1H свечи
+        candles = get_1h_candles(sym)
         if not candles or len(candles) < 30:
             continue
 
@@ -306,17 +291,84 @@ def check_ema_cross():
     save_state(state)
 
 # ==========================================================
-# ФОНОВЫЙ ПОТОК (запускаем каждые 15 минут, но только при наличии пересечения на 1H)
+# СТРАТЕГИЯ 2: ТРЕНДОВЫЙ СОВЕТНИК (УМНАЯ СВОДКА РАЗ В ЧАС)
+# ==========================================================
+def trend_adviser():
+    if not is_working_hours():
+        return
+
+    print("📊 Советник (1H): отправляю умную сводку тренда...")
+
+    up_list = []      # Монеты идущие вверх
+    down_list = []    # Монеты идущие вниз
+    sideways_count = 0
+
+    for sym in SYMBOLS:
+        candles = get_1h_candles(sym)
+        if not candles or len(candles) < 30:
+            continue
+
+        ema9 = calculate_ema(candles, 9)
+        ema21 = calculate_ema(candles, 21)
+        if ema9 is None or ema21 is None:
+            continue
+
+        # Устанавливаем небольшой порог, чтобы не считать мельчайшие колебания трендом
+        # Если разница меньше 0.1% - это боковик
+        diff = (ema9 - ema21) / ema21
+
+        if diff > 0.001:
+            up_list.append(sym)
+        elif diff < -0.001:
+            down_list.append(sym)
+        else:
+            sideways_count += 1
+
+    if not up_list and not down_list:
+        msg = "📊 ТРЕНД 1H: Рынок в боковике."
+        send_telegram(msg)
+        print("📊 Рынок в боковике. Сводка отправлена.")
+        return
+
+    # Логика ограничения вывода (чтобы не было простыни)
+    if len(up_list) > 20:
+        up_text = f"Весь рынок ({len(up_list)}+ монет)"
+    else:
+        up_text = ", ".join(up_list)
+
+    if len(down_list) > 20:
+        down_text = f"Весь рынок ({len(down_list)}+ монет)"
+    else:
+        down_text = ", ".join(down_list)
+
+    # Формируем сообщение
+    now_ekb = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5)
+    msg = f"📊 ТРЕНД 1H ({now_ekb.strftime('%H:%M')}):\n"
+    msg += f"🔵 Сильные (ВВЕРХ): {up_text}\n"
+    msg += f"🔴 Слабые (ВНИЗ): {down_text}\n"
+    msg += f"⚪ В боковике: {sideways_count} монет."
+
+    send_telegram(msg)
+    print("📊 Умная сводка тренда отправлена!")
+
+# ==========================================================
+# ФОНОВЫЙ ПОТОК
 # ==========================================================
 def bg_alarm():
     print("🚀 Фоновый поток (1H) запущен!", flush=True)
     last_check = time.time()
+    last_trend_msg = 0
     while True:
         try:
             now = time.time()
-            if now - last_check >= 900:  # каждые 15 минут проверяем
+            # Сигнальщик: каждые 15 минут ищем пересечение EMA
+            if now - last_check >= 900:
                 check_ema_cross()
                 last_check = now
+            # Трендовый советник: отправляем умную сводку каждый час (3600 секунд)
+            if now - last_trend_msg >= 3600:
+                trend_adviser()
+                last_trend_msg = now
             time.sleep(30)
         except Exception as e:
             print(f"⚠️ Ошибка: {e}")
