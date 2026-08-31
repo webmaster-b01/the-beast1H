@@ -317,9 +317,9 @@ def trend_adviser():
         # Если разница меньше 0.1% - это боковик
         diff = (ema9 - ema21) / ema21
 
-        if diff > 0.001:
+        if diff > 0.0005:
             up_list.append(sym)
-        elif diff < -0.001:
+        elif diff < -0.0005:
             down_list.append(sym)
         else:
             sideways_count += 1
