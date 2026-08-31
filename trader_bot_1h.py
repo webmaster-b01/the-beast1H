@@ -330,16 +330,9 @@ def trend_adviser():
         print("📊 Рынок в боковике. Сводка отправлена.")
         return
 
-    # Логика ограничения вывода (чтобы не было простыни)
-    if len(up_list) > 20:
-        up_text = f"Весь рынок ({len(up_list)}+ монет)"
-    else:
-        up_text = ", ".join(up_list)
-
-    if len(down_list) > 20:
-        down_text = f"Весь рынок ({len(down_list)}+ монет)"
-    else:
-        down_text = ", ".join(down_list)
+    # Формируем полный список без ограничений
+    up_text = ", ".join(up_list) if up_list else "—"
+    down_text = ", ".join(down_list) if down_list else "—"
 
     # Формируем сообщение
     now_ekb = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5)
