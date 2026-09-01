@@ -16,39 +16,8 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
 MODEL = "deepseek/deepseek-v4-pro"
 
-# Параметры торговли (для сигналов на вход)
-STOP_LOSS_PCT = 2.5   # -2.5% от входа
-TAKE_PROFIT_PCT = 5.0 # +5.0% от входа
-
-SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
-    "ADAUSDT", "DOGEUSDT", "TRXUSDT", "LINKUSDT", "DOTUSDT",
-    "AVAXUSDT", "MATICUSDT", "UNIUSDT", "ATOMUSDT", "LTCUSDT",
-    "BCHUSDT", "XLMUSDT", "PAXGUSDT", "FILUSDT", "TONUSDT",
-    "SHIBUSDT", "NEARUSDT", "APTUSDT", "ZECUSDT", "GRTUSDT",
-    "WLDUSDT", "FARTCOINUSDT", "GUNUSDT", "SUIUSDT", "SEIUSDT",
-    "INJUSDT", "RNDRUSDT", "FETUSDT", "TAOUSDT", "AAVEUSDT",
-    "MKRUSDT", "CRVUSDT", "ARBUSDT", "OPUSDT", "STXUSDT",
-    "ALGOUSDT", "HBARUSDT", "KASUSDT", "ICPUSDT", "VETUSDT",
-    "EGLDUSDT", "RUNEUSDT", "ENSUSDT", "LDOUSDT", "QNTUSDT",
-    "HYPEUSDT", "JUPUSDT", "JTOUSDT", "ONDOUSDT",
-    "TIAUSDT", "PYTHUSDT", "AEVOUSDT", "WIFUSDT", "POPCATUSDT",
-    "PENGUUSDT", "PNUTUSDT", "ACTUSDT", "BONKUSDT", "NOTUSDT",
-    "DOGSUSDT", "HMSTRUSDT", "CATIUSDT", "PIXELUSDT", "ALTUSDT",
-    "SAGAUSDT", "DYMUSDT", "STRKUSDT", "MANTAUSDT", "ETHFIUSDT",
-    "PEPEUSDT", "FLOKIUSDT", "OMUSDT", "ETCUSDT", "XTZUSDT",
-    "SANDUSDT", "MANAUSDT", "GALAUSDT", "IMXUSDT", "FLOWUSDT",
-    "KAVAUSDT", "ZRXUSDT", "LRCUSDT", "DYDXUSDT", "BLURUSDT",
-    "1INCHUSDT", "RAYUSDT", "ZROUSDT", "WUSDT", "GASUSDT",
-    "API3USDT", "ARUSDT", "JASMYUSDT", "RSRUSDT", "SYNUSDT"
-]
-
+# Главные монеты для анализа
 MAIN_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
-
-STATE_FILE = "signal_state_30m.json"
-DAILY_LIMIT = 40
-COOLDOWN_HOURS = 4
-MIN_INTERVAL_HOURS = 0.5 # Минимальный интервал между любыми новыми сигналами
 
 NEWS_CACHE = {"last_update": 0, "headlines": [], "sentiment": "Не определён"}
 
@@ -122,40 +91,14 @@ def update_news_cache():
 
 app = Flask(__name__)
 
-def load_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def save_state(data):
-    with open(STATE_FILE, 'w') as f:
-        json.dump(data, f)
-
 def is_working_hours():
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     hour_ekb = (now_utc.hour + 5) % 24
     return (hour_ekb >= 14) or (hour_ekb < 3)
 
-def get_ticker(symbol):
-    try:
-        url = f"https://api.mexc.com/api/v3/ticker/24hr?symbol={symbol}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, headers=headers, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            return {'price': float(data['lastPrice']), 'volume': float(data['quoteVolume'])}
-        return None
-    except:
-        return None
-
-# Функция для 30-минутных свечей
 def get_30m_candles(symbol):
     try:
-        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=30m&limit=40"
+        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=30m&limit=5"
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
@@ -168,15 +111,6 @@ def get_30m_candles(symbol):
     except:
         return None
 
-def calculate_ema(values, period):
-    if len(values) < period:
-        return None
-    k = 2 / (period + 1)
-    ema = values[0]
-    for i in range(1, len(values)):
-        ema = (values[i] - ema) * k + ema
-    return ema
-
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     try:
@@ -185,102 +119,20 @@ def send_telegram(text):
         pass
 
 # ==========================================================
-# СТРАТЕГИЯ 1: РАБОЧАЯ ЛОШАДКА 30M (Сигналы на вход)
-# ==========================================================
-def check_ema_cross():
-    if not is_working_hours():
-        return
-    print("🏇 Сканер (30M): ищу пересечение EMA9/EMA21...")
-    state = load_state()
-    new_state = {}
-    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-    if state.get('date') != today:
-        state = {'date': today}
-    signals_today = state.get('signals_today', 0)
-    if signals_today >= DAILY_LIMIT:
-        print(f"🚫 Дневной лимит ({DAILY_LIMIT}) достигнут.")
-        save_state(state)
-        return
-    last_signal_time = state.get('last_signal_time', 0)
-    if (time.time() - last_signal_time) < (MIN_INTERVAL_HOURS * 3600):
-        print(f"⏳ Прошло меньше {MIN_INTERVAL_HOURS} часов с последнего сигнала. Пропускаю цикл.")
-        save_state(state)
-        return
-    headlines, sentiment = update_news_cache()
-    news_text = "\n".join([f"- {n}" for n in headlines]) if headlines else "Нет свежих новостей."
-    sent_in_cycle = 0
-    for sym in SYMBOLS:
-        if signals_today >= DAILY_LIMIT:
-            break
-        if sent_in_cycle >= 3:
-            break
-        candles = get_30m_candles(sym)
-        if not candles or len(candles) < 30:
-            continue
-        ema9_prev = calculate_ema(candles[:-1], 9)
-        ema21_prev = calculate_ema(candles[:-1], 21)
-        ema9_curr = calculate_ema(candles, 9)
-        ema21_curr = calculate_ema(candles, 21)
-        if ema9_prev is None or ema21_prev is None or ema9_curr is None or ema21_curr is None:
-            continue
-        is_cross_up = ema9_prev <= ema21_prev and ema9_curr > ema21_curr
-        is_cross_down = ema9_prev >= ema21_prev and ema9_curr < ema21_curr
-        direction = None
-        if is_cross_up:
-            direction = 'LONG'
-        elif is_cross_down:
-            direction = 'SHORT'
-        if direction:
-            ticker = get_ticker(sym)
-            if not ticker:
-                continue
-            if ticker['price'] < 0.0001 or ticker['volume'] < 500000:
-                continue
-            last_signal = state.get(sym, {}).get('signal')
-            last_time = state.get(sym, {}).get('time', 0)
-            if last_signal == direction and (time.time() - last_time) < (COOLDOWN_HOURS * 3600):
-                continue
-            current_price = candles[-1]
-            if direction == 'LONG':
-                stop_loss = current_price * (1 - STOP_LOSS_PCT / 100)
-                take_profit = current_price * (1 + TAKE_PROFIT_PCT / 100)
-            else:
-                stop_loss = current_price * (1 + STOP_LOSS_PCT / 100)
-                take_profit = current_price * (1 - TAKE_PROFIT_PCT / 100)
-            msg = f"🏇 РАБОЧАЯ ЛОШАДКА (30M): {direction} {sym}\n"
-            msg += f"Вход: {current_price:.4f}\n"
-            msg += f"Стоп (-{STOP_LOSS_PCT}%): {stop_loss:.4f}\n"
-            msg += f"Тейк (+{TAKE_PROFIT_PCT}%): {take_profit:.4f}\n"
-            msg += f"📰 Новости: \n{news_text}\n"
-            msg += f"🧠 Оценка фона: {sentiment}"
-            send_telegram(msg)
-            print(f"✅ Сигнал {direction} по {sym} отправлен!")
-            state['last_signal_time'] = time.time()
-            new_state[sym] = {'signal': direction, 'time': time.time()}
-            signals_today += 1
-            sent_in_cycle += 1
-        else:
-            if sym in state:
-                new_state[sym] = state[sym]
-    state['signals_today'] = signals_today
-    for sym, value in new_state.items():
-        state[sym] = value
-    save_state(state)
-
-# ==========================================================
-# СТРАТЕГИЯ 2: ТРЕНДОВЫЙ СОВЕТНИК (30 мин, 3 значения, ровное время)
+# ТРЕНДОВЫЙ СОВЕТНИК (30 мин, 3 значения, точное время)
 # ==========================================================
 def trend_adviser():
     if not is_working_hours():
         return
-    # Проверка: текущее время UTC
+
     now_utc = datetime.datetime.now(datetime.timezone.utc)
-    # Екатеринбургское время (UTC+5)
     now_ekb = now_utc + datetime.timedelta(hours=5)
-    # Если минута не 00 и не 30 - выходим, чтобы сигнал пришел ровно в 14:00, 14:30 и т.д.
+
+    # Отправляем только если минута = 00 или 30
     if now_ekb.minute not in [0, 30]:
         return
-    print("📊 Советник: отправляю сводку по 5 главным монетам (30 мин, 3 значения, ровное время)...")
+
+    print("📊 Советник: отправляю сводку по 5 главным монетам (30 мин)...")
 
     lines = []
 
@@ -290,17 +142,10 @@ def trend_adviser():
             lines.append(f"{sym}: Нет данных")
             continue
 
-        # Порядок: старое -> новое
-        # candles[-4] - 90 минут назад
-        # candles[-3] - 60 минут назад
-        # candles[-2] - 30 минут назад
-        # candles[-1] - сейчас
-
         change_1 = (candles[-3] - candles[-4]) / candles[-4] * 100
         change_2 = (candles[-2] - candles[-3]) / candles[-3] * 100
         change_3 = (candles[-1] - candles[-2]) / candles[-2] * 100
 
-        # Определяем динамику
         if abs(change_3) < 0.05:
             label = "Боковик"
         elif change_3 > 0:
@@ -318,33 +163,22 @@ def trend_adviser():
             else:
                 label = "Замедление падения"
 
-        # Без звездочек, только чистые цифры и палочки
         lines.append(f"{sym}: {change_1:+.2f}% | {change_2:+.2f}% | {change_3:+.2f}% | {label}")
 
     msg = f"📊 ТРЕНД 30М ({now_ekb.strftime('%H:%M')}):\n" + "\n".join(lines)
-    
+
     send_telegram(msg)
     print("📊 Сводка отправлена!")
 
 # ==========================================================
-# ФОНОВЫЙ ПОТОК
+# ФОНОВЫЙ ПОТОК (проверяем время каждые 30 секунд)
 # ==========================================================
 def bg_alarm():
-    print("🚀 Фоновый поток (30M) запущен!", flush=True)
-    last_check = time.time()
-    last_trend_msg = 0
+    print("🚀 Фоновый поток Советника запущен!", flush=True)
     while True:
         try:
-            now = time.time()
-            # Проверяем, прошло ли 30 минут с последнего запуска сканера
-            if now - last_check >= 900:
-                check_ema_cross()
-                last_check = now
-            # Проверяем каждые 30 минут для советника
-            if now - last_trend_msg >= 1800:
-                trend_adviser()
-                last_trend_msg = now
-            time.sleep(30)
+            trend_adviser()
+            time.sleep(30)  # Проверяем каждые 30 секунд, отправка только в 00 и 30 минут
         except Exception as e:
             print(f"⚠️ Ошибка: {e}")
             time.sleep(300)
