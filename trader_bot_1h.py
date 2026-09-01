@@ -20,6 +20,7 @@ MODEL = "deepseek/deepseek-v4-pro"
 STOP_LOSS_PCT = 2.5   # -2.5% от входа
 TAKE_PROFIT_PCT = 5.0 # +5.0% от входа
 
+# Основной список монет для сигналов
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
     "ADAUSDT", "DOGEUSDT", "TRXUSDT", "LINKUSDT", "DOTUSDT",
@@ -43,14 +44,14 @@ SYMBOLS = [
     "API3USDT", "ARUSDT", "JASMYUSDT", "RSRUSDT", "SYNUSDT"
 ]
 
+# 5 главных монет для Трендового Советника
+MAIN_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+
 STATE_FILE = "signal_state_1h.json"
 DAILY_LIMIT = 20
 COOLDOWN_HOURS = 4
-MIN_INTERVAL_HOURS = 1 # Минимальный интервал между сигналами на вход
+MIN_INTERVAL_HOURS = 1
 
-# ==========================================================
-# НОВОСТИ
-# ==========================================================
 NEWS_CACHE = {"last_update": 0, "headlines": [], "sentiment": "Не определён"}
 
 RSS_FEEDS = [
@@ -79,7 +80,6 @@ def fetch_rss_headlines():
 def analyze_news_sentiment(news_text):
     if not news_text:
         return "Новостей нет"
-    
     prompt = f"""
 Проанализируй следующие новости криптовалютного рынка:
 {news_text}
@@ -121,11 +121,9 @@ def update_news_cache():
     else:
         print("⚠️ Не удалось получить свежие новости.")
     return NEWS_CACHE["headlines"], NEWS_CACHE["sentiment"]
-# ==========================================================
 
 app = Flask(__name__)
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
@@ -156,16 +154,17 @@ def get_ticker(symbol):
     except:
         return None
 
+# Функция для 1-часовых свечей (limit=3, чтобы узнать текущий и прошлый час)
 def get_1h_candles(symbol):
     try:
-        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
+        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=1h&limit=3"
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             candles = []
             for candle in data:
-                candles.append(float(candle[4]))
+                candles.append(float(candle[4])) # close
             return candles
         return None
     except:
@@ -188,77 +187,72 @@ def send_telegram(text):
         pass
 
 # ==========================================================
-# СТРАТЕГИЯ 1: СИГНАЛЬЩИК (ВХОД НА ПЕРЕСЕЧЕНИИ EMA9/EMA21)
+# СТРАТЕГИЯ 1: РАБОЧАЯ ЛОШАДКА 1H (Сигналы на вход)
 # ==========================================================
 def check_ema_cross():
     if not is_working_hours():
         return
-
     print("🏇 Сканер (1H): ищу пересечение EMA9/EMA21...")
-
     state = load_state()
     new_state = {}
-
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     if state.get('date') != today:
         state = {'date': today}
-
     signals_today = state.get('signals_today', 0)
     if signals_today >= DAILY_LIMIT:
         print(f"🚫 Дневной лимит ({DAILY_LIMIT}) достигнут.")
         save_state(state)
         return
-
     last_signal_time = state.get('last_signal_time', 0)
     if (time.time() - last_signal_time) < (MIN_INTERVAL_HOURS * 3600):
         print(f"⏳ Прошло меньше {MIN_INTERVAL_HOURS} часов с последнего сигнала. Пропускаю цикл.")
         save_state(state)
         return
-
     headlines, sentiment = update_news_cache()
     news_text = "\n".join([f"- {n}" for n in headlines]) if headlines else "Нет свежих новостей."
-
     sent_in_cycle = 0
-
     for sym in SYMBOLS:
         if signals_today >= DAILY_LIMIT:
             break
         if sent_in_cycle >= 2:
             break
-
         candles = get_1h_candles(sym)
-        if not candles or len(candles) < 30:
+        # Для сигналов нужно больше данных (берем limit=50 на всякий случай, но нам нужно минимум 30)
+        url = f"https://api.mexc.com/api/v3/klines?symbol={sym}&interval=1h&limit=100"
+        try:
+            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+            if resp.status_code == 200:
+                candles = [float(c[4]) for c in resp.json()]
+            else:
+                continue
+        except:
             continue
 
+        if not candles or len(candles) < 30:
+            continue
         ema9_prev = calculate_ema(candles[:-1], 9)
         ema21_prev = calculate_ema(candles[:-1], 21)
         ema9_curr = calculate_ema(candles, 9)
         ema21_curr = calculate_ema(candles, 21)
-
         if ema9_prev is None or ema21_prev is None or ema9_curr is None or ema21_curr is None:
             continue
-
         is_cross_up = ema9_prev <= ema21_prev and ema9_curr > ema21_curr
         is_cross_down = ema9_prev >= ema21_prev and ema9_curr < ema21_curr
-
         direction = None
         if is_cross_up:
             direction = 'LONG'
         elif is_cross_down:
             direction = 'SHORT'
-
         if direction:
             ticker = get_ticker(sym)
             if not ticker:
                 continue
             if ticker['price'] < 0.0001 or ticker['volume'] < 500000:
                 continue
-
             last_signal = state.get(sym, {}).get('signal')
             last_time = state.get(sym, {}).get('time', 0)
             if last_signal == direction and (time.time() - last_time) < (COOLDOWN_HOURS * 3600):
                 continue
-
             current_price = candles[-1]
             if direction == 'LONG':
                 stop_loss = current_price * (1 - STOP_LOSS_PCT / 100)
@@ -266,17 +260,14 @@ def check_ema_cross():
             else:
                 stop_loss = current_price * (1 + STOP_LOSS_PCT / 100)
                 take_profit = current_price * (1 - TAKE_PROFIT_PCT / 100)
-
             msg = f"🏇 РАБОЧАЯ ЛОШАДКА (1H): {direction} {sym}\n"
             msg += f"Вход: {current_price:.4f}\n"
             msg += f"Стоп (-{STOP_LOSS_PCT}%): {stop_loss:.4f}\n"
             msg += f"Тейк (+{TAKE_PROFIT_PCT}%): {take_profit:.4f}\n"
             msg += f"📰 Новости: \n{news_text}\n"
             msg += f"🧠 Оценка фона: {sentiment}"
-
             send_telegram(msg)
             print(f"✅ Сигнал {direction} по {sym} отправлен!")
-
             state['last_signal_time'] = time.time()
             new_state[sym] = {'signal': direction, 'time': time.time()}
             signals_today += 1
@@ -284,65 +275,66 @@ def check_ema_cross():
         else:
             if sym in state:
                 new_state[sym] = state[sym]
-
     state['signals_today'] = signals_today
     for sym, value in new_state.items():
         state[sym] = value
     save_state(state)
 
 # ==========================================================
-# СТРАТЕГИЯ 2: ТРЕНДОВЫЙ СОВЕТНИК (УМНАЯ СВОДКА РАЗ В ЧАС)
+# СТРАТЕГИЯ 2: ТРЕНДОВЫЙ СОВЕТНИК (5 монет, 1 час)
 # ==========================================================
 def trend_adviser():
     if not is_working_hours():
         return
+    print("📊 Советник: отправляю сводку по 5 главным монетам (за 1 час)...")
 
-    print("📊 Советник (1H): отправляю умную сводку тренда...")
+    # Сохраняем результат, чтобы отправить одним сообщением
+    lines = []
 
-    up_list = []      # Монеты идущие вверх
-    down_list = []    # Монеты идущие вниз
-    sideways_count = 0
-
-    for sym in SYMBOLS:
+    for sym in MAIN_SYMBOLS:
         candles = get_1h_candles(sym)
-        if not candles or len(candles) < 30:
+        if not candles or len(candles) < 3:
+            lines.append(f"{sym}: Нет данных")
             continue
 
-        ema9 = calculate_ema(candles, 9)
-        ema21 = calculate_ema(candles, 21)
-        if ema9 is None or ema21 is None:
-            continue
+        # Свечи идут от старых к новым
+        # candles[-3] - позапрошлый час
+        # candles[-2] - прошлый час
+        # candles[-1] - текущий час
+        price_prev_2h = candles[-3]
+        price_prev_1h = candles[-2]
+        price_now = candles[-1]
 
-        # Устанавливаем небольшой порог, чтобы не считать мельчайшие колебания трендом
-        # Если разница меньше 0.1% - это боковик
-        diff = (ema9 - ema21) / ema21
+        # Считаем % изменения за текущий час (от прошлого часа)
+        current_change = (price_now - price_prev_1h) / price_prev_1h * 100
+        # Считаем % изменения за прошлый час
+        prev_change = (price_prev_1h - price_prev_2h) / price_prev_2h * 100
 
-        if diff > 0.0005:
-            up_list.append(sym)
-        elif diff < -0.0005:
-            down_list.append(sym)
+        # Определяем динамику
+        if abs(current_change) < 0.05:
+            label = "Боковик"
+        elif current_change > 0:
+            if prev_change < -0.05:
+                label = "Разворот вверх!"
+            elif current_change >= prev_change:
+                label = "Ускорение вверх"
+            else:
+                label = "Замедление роста"
         else:
-            sideways_count += 1
+            if prev_change > 0.05:
+                label = "Разворот вниз!"
+            elif current_change <= prev_change:
+                label = "Ускорение вниз"
+            else:
+                label = "Замедление падения"
 
-    if not up_list and not down_list:
-        msg = "📊 ТРЕНД 1H: Рынок в боковике."
-        send_telegram(msg)
-        print("📊 Рынок в боковике. Сводка отправлена.")
-        return
+        lines.append(f"{sym}: **{current_change:+.2f}%** ({label}, было {prev_change:+.2f}%)")
 
-    # Формируем полный список без ограничений
-    up_text = ", ".join(up_list) if up_list else "—"
-    down_text = ", ".join(down_list) if down_list else "—"
-
-    # Формируем сообщение
     now_ekb = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5)
-    msg = f"📊 ТРЕНД 1H ({now_ekb.strftime('%H:%M')}):\n"
-    msg += f"🔵 Сильные (ВВЕРХ): {up_text}\n"
-    msg += f"🔴 Слабые (ВНИЗ): {down_text}\n"
-    msg += f"⚪ В боковике: {sideways_count} монет."
-
+    msg = f"📊 ТРЕНД 1H ({now_ekb.strftime('%H:%M')}):\n" + "\n".join(lines)
+    
     send_telegram(msg)
-    print("📊 Умная сводка тренда отправлена!")
+    print("📊 Сводка отправлена!")
 
 # ==========================================================
 # ФОНОВЫЙ ПОТОК
@@ -354,11 +346,9 @@ def bg_alarm():
     while True:
         try:
             now = time.time()
-            # Сигнальщик: каждые 15 минут ищем пересечение EMA
             if now - last_check >= 900:
                 check_ema_cross()
                 last_check = now
-            # Трендовый советник: отправляем умную сводку каждый час (3600 секунд)
             if now - last_trend_msg >= 3600:
                 trend_adviser()
                 last_trend_msg = now
@@ -367,16 +357,13 @@ def bg_alarm():
             print(f"⚠️ Ошибка: {e}")
             time.sleep(300)
 
-# --- ОБРАБОТЧИК ЗАПРОСОВ (ДЛЯ RENDER) ---
 @app.route('/')
 def handler():
     return "OK", 200
 
-# --- ЗАПУСК ---
 if __name__ == "__main__":
     alarm_thread = threading.Thread(target=bg_alarm)
     alarm_thread.daemon = True
     alarm_thread.start()
-
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
