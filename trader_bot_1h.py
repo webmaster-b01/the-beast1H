@@ -45,10 +45,10 @@ SYMBOLS = [
 
 MAIN_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
 
-STATE_FILE = "signal_state_1h.json"
-DAILY_LIMIT = 20
+STATE_FILE = "signal_state_30m.json"
+DAILY_LIMIT = 40
 COOLDOWN_HOURS = 4
-MIN_INTERVAL_HOURS = 1
+MIN_INTERVAL_HOURS = 0.5 # Минимальный интервал между любыми новыми сигналами
 
 NEWS_CACHE = {"last_update": 0, "headlines": [], "sentiment": "Не определён"}
 
@@ -152,24 +152,10 @@ def get_ticker(symbol):
     except:
         return None
 
-def get_1h_candles(symbol):
-    try:
-        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, headers=headers, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            candles = []
-            for candle in data:
-                candles.append(float(candle[4]))
-            return candles
-        return None
-    except:
-        return None
-
+# Функция для 30-минутных свечей
 def get_30m_candles(symbol):
     try:
-        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=30m&limit=4"
+        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=30m&limit=40"
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
@@ -199,12 +185,12 @@ def send_telegram(text):
         pass
 
 # ==========================================================
-# СТРАТЕГИЯ 1: РАБОЧАЯ ЛОШАДКА 1H (Сигналы на вход)
+# СТРАТЕГИЯ 1: РАБОЧАЯ ЛОШАДКА 30M (Сигналы на вход)
 # ==========================================================
 def check_ema_cross():
     if not is_working_hours():
         return
-    print("🏇 Сканер (1H): ищу пересечение EMA9/EMA21...")
+    print("🏇 Сканер (30M): ищу пересечение EMA9/EMA21...")
     state = load_state()
     new_state = {}
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
@@ -226,9 +212,9 @@ def check_ema_cross():
     for sym in SYMBOLS:
         if signals_today >= DAILY_LIMIT:
             break
-        if sent_in_cycle >= 2:
+        if sent_in_cycle >= 3:
             break
-        candles = get_1h_candles(sym)
+        candles = get_30m_candles(sym)
         if not candles or len(candles) < 30:
             continue
         ema9_prev = calculate_ema(candles[:-1], 9)
@@ -261,7 +247,7 @@ def check_ema_cross():
             else:
                 stop_loss = current_price * (1 + STOP_LOSS_PCT / 100)
                 take_profit = current_price * (1 - TAKE_PROFIT_PCT / 100)
-            msg = f"🏇 РАБОЧАЯ ЛОШАДКА (1H): {direction} {sym}\n"
+            msg = f"🏇 РАБОЧАЯ ЛОШАДКА (30M): {direction} {sym}\n"
             msg += f"Вход: {current_price:.4f}\n"
             msg += f"Стоп (-{STOP_LOSS_PCT}%): {stop_loss:.4f}\n"
             msg += f"Тейк (+{TAKE_PROFIT_PCT}%): {take_profit:.4f}\n"
@@ -287,16 +273,13 @@ def check_ema_cross():
 def trend_adviser():
     if not is_working_hours():
         return
-
     # Проверка: текущее время UTC
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     # Екатеринбургское время (UTC+5)
     now_ekb = now_utc + datetime.timedelta(hours=5)
-    
     # Если минута не 00 и не 30 - выходим, чтобы сигнал пришел ровно в 14:00, 14:30 и т.д.
     if now_ekb.minute not in [0, 30]:
         return
-
     print("📊 Советник: отправляю сводку по 5 главным монетам (30 мин, 3 значения, ровное время)...")
 
     lines = []
@@ -347,18 +330,18 @@ def trend_adviser():
 # ФОНОВЫЙ ПОТОК
 # ==========================================================
 def bg_alarm():
-    print("🚀 Фоновый поток (1H) запущен!", flush=True)
+    print("🚀 Фоновый поток (30M) запущен!", flush=True)
     last_check = time.time()
     last_trend_msg = 0
     while True:
         try:
             now = time.time()
+            # Проверяем, прошло ли 30 минут с последнего запуска сканера
             if now - last_check >= 900:
                 check_ema_cross()
                 last_check = now
-            # Проверяем каждые 30 секунд, но отправка происходит только в 00 и 30 минут
-            # Поэтому используем условие внутри trend_adviser
-            if now - last_trend_msg >= 60:
+            # Проверяем каждые 30 минут для советника
+            if now - last_trend_msg >= 1800:
                 trend_adviser()
                 last_trend_msg = now
             time.sleep(30)
@@ -376,4 +359,3 @@ if __name__ == "__main__":
     alarm_thread.start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-    
