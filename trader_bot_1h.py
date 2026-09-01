@@ -20,7 +20,6 @@ MODEL = "deepseek/deepseek-v4-pro"
 STOP_LOSS_PCT = 2.5   # -2.5% от входа
 TAKE_PROFIT_PCT = 5.0 # +5.0% от входа
 
-# Основной список монет для сигналов
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
     "ADAUSDT", "DOGEUSDT", "TRXUSDT", "LINKUSDT", "DOTUSDT",
@@ -44,7 +43,6 @@ SYMBOLS = [
     "API3USDT", "ARUSDT", "JASMYUSDT", "RSRUSDT", "SYNUSDT"
 ]
 
-# 5 главных монет для Трендового Советника
 MAIN_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
 
 STATE_FILE = "signal_state_1h.json"
@@ -154,17 +152,31 @@ def get_ticker(symbol):
     except:
         return None
 
-# Функция для 1-часовых свечей (limit=3, чтобы узнать текущий и прошлый час)
 def get_1h_candles(symbol):
     try:
-        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=1h&limit=3"
+        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             candles = []
             for candle in data:
-                candles.append(float(candle[4])) # close
+                candles.append(float(candle[4]))
+            return candles
+        return None
+    except:
+        return None
+
+def get_30m_candles(symbol):
+    try:
+        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=30m&limit=4"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            candles = []
+            for candle in data:
+                candles.append(float(candle[4]))
             return candles
         return None
     except:
@@ -217,17 +229,6 @@ def check_ema_cross():
         if sent_in_cycle >= 2:
             break
         candles = get_1h_candles(sym)
-        # Для сигналов нужно больше данных (берем limit=50 на всякий случай, но нам нужно минимум 30)
-        url = f"https://api.mexc.com/api/v3/klines?symbol={sym}&interval=1h&limit=100"
-        try:
-            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-            if resp.status_code == 200:
-                candles = [float(c[4]) for c in resp.json()]
-            else:
-                continue
-        except:
-            continue
-
         if not candles or len(candles) < 30:
             continue
         ema9_prev = calculate_ema(candles[:-1], 9)
@@ -281,63 +282,60 @@ def check_ema_cross():
     save_state(state)
 
 # ==========================================================
-# СТРАТЕГИЯ 2: ТРЕНДОВЫЙ СОВЕТНИК (5 монет, 1 час)
+# СТРАТЕГИЯ 2: ТРЕНДОВЫЙ СОВЕТНИК (30 мин, 3 значения)
 # ==========================================================
 def trend_adviser():
     if not is_working_hours():
         return
-    print("📊 Советник: отправляю сводку по 5 главным монетам (за 1 час)...")
+    print("📊 Советник: отправляю сводку по 5 главным монетам (30 мин, 3 значения)...")
 
-    # Сохраняем результат, чтобы отправить одним сообщением
     lines = []
 
     for sym in MAIN_SYMBOLS:
-        candles = get_1h_candles(sym)
-        if not candles or len(candles) < 3:
+        candles = get_30m_candles(sym)
+        if not candles or len(candles) < 4:
             lines.append(f"{sym}: Нет данных")
             continue
 
-        # Свечи идут от старых к новым
-        # candles[-3] - позапрошлый час
-        # candles[-2] - прошлый час
-        # candles[-1] - текущий час
-        price_prev_2h = candles[-3]
-        price_prev_1h = candles[-2]
-        price_now = candles[-1]
+        # Исправленный порядок: старое -> новое
+        # candles[-4] - 90 минут назад
+        # candles[-3] - 60 минут назад
+        # candles[-2] - 30 минут назад
+        # candles[-1] - сейчас
 
-        # Считаем % изменения за текущий час (от прошлого часа)
-        current_change = (price_now - price_prev_1h) / price_prev_1h * 100
-        # Считаем % изменения за прошлый час
-        prev_change = (price_prev_1h - price_prev_2h) / price_prev_2h * 100
+        change_1 = (candles[-3] - candles[-4]) / candles[-4] * 100  # 90-60 мин назад
+        change_2 = (candles[-2] - candles[-3]) / candles[-3] * 100  # 60-30 мин назад
+        change_3 = (candles[-1] - candles[-2]) / candles[-2] * 100  # последние 30 мин
 
-        # Определяем динамику
-        if abs(current_change) < 0.05:
+        # Определяем динамику по текущему (change_3) и предыдущему (change_2)
+        if abs(change_3) < 0.05:
             label = "Боковик"
-        elif current_change > 0:
-            if prev_change < -0.05:
+        elif change_3 > 0:
+            if change_2 < -0.05:
                 label = "Разворот вверх!"
-            elif current_change >= prev_change:
+            elif change_3 >= change_2:
                 label = "Ускорение вверх"
             else:
                 label = "Замедление роста"
         else:
-            if prev_change > 0.05:
+            if change_2 > 0.05:
                 label = "Разворот вниз!"
-            elif current_change <= prev_change:
+            elif change_3 <= change_2:
                 label = "Ускорение вниз"
             else:
                 label = "Замедление падения"
 
-        lines.append(f"{sym}: **{current_change:+.2f}%** ({label}, было {prev_change:+.2f}%)")
+        # Порядок в сообщении: старое (change_1) | среднее (change_2) | новое (change_3)
+        lines.append(f"{sym}: **{change_1:+.2f}%** | **{change_2:+.2f}%** | **{change_3:+.2f}%** | {label}")
 
     now_ekb = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5)
-    msg = f"📊 ТРЕНД 1H ({now_ekb.strftime('%H:%M')}):\n" + "\n".join(lines)
+    msg = f"📊 ТРЕНД 30М ({now_ekb.strftime('%H:%M')}):\n" + "\n".join(lines)
     
     send_telegram(msg)
     print("📊 Сводка отправлена!")
 
 # ==========================================================
-# ФОНОВЫЙ ПОТОК
+# ФОНОВЫЙ ПОТОК (Отправка каждые 30 минут)
 # ==========================================================
 def bg_alarm():
     print("🚀 Фоновый поток (1H) запущен!", flush=True)
@@ -349,7 +347,8 @@ def bg_alarm():
             if now - last_check >= 900:
                 check_ema_cross()
                 last_check = now
-            if now - last_trend_msg >= 3600:
+            # Отправляем советник каждые 30 минут (1800 секунд)
+            if now - last_trend_msg >= 1800:
                 trend_adviser()
                 last_trend_msg = now
             time.sleep(30)
