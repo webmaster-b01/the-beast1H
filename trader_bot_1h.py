@@ -282,12 +282,22 @@ def check_ema_cross():
     save_state(state)
 
 # ==========================================================
-# СТРАТЕГИЯ 2: ТРЕНДОВЫЙ СОВЕТНИК (30 мин, 3 значения)
+# СТРАТЕГИЯ 2: ТРЕНДОВЫЙ СОВЕТНИК (30 мин, 3 значения, ровное время)
 # ==========================================================
 def trend_adviser():
     if not is_working_hours():
         return
-    print("📊 Советник: отправляю сводку по 5 главным монетам (30 мин, 3 значения)...")
+
+    # Проверка: текущее время UTC
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    # Екатеринбургское время (UTC+5)
+    now_ekb = now_utc + datetime.timedelta(hours=5)
+    
+    # Если минута не 00 и не 30 - выходим, чтобы сигнал пришел ровно в 14:00, 14:30 и т.д.
+    if now_ekb.minute not in [0, 30]:
+        return
+
+    print("📊 Советник: отправляю сводку по 5 главным монетам (30 мин, 3 значения, ровное время)...")
 
     lines = []
 
@@ -297,17 +307,17 @@ def trend_adviser():
             lines.append(f"{sym}: Нет данных")
             continue
 
-        # Исправленный порядок: старое -> новое
+        # Порядок: старое -> новое
         # candles[-4] - 90 минут назад
         # candles[-3] - 60 минут назад
         # candles[-2] - 30 минут назад
         # candles[-1] - сейчас
 
-        change_1 = (candles[-3] - candles[-4]) / candles[-4] * 100  # 90-60 мин назад
-        change_2 = (candles[-2] - candles[-3]) / candles[-3] * 100  # 60-30 мин назад
-        change_3 = (candles[-1] - candles[-2]) / candles[-2] * 100  # последние 30 мин
+        change_1 = (candles[-3] - candles[-4]) / candles[-4] * 100
+        change_2 = (candles[-2] - candles[-3]) / candles[-3] * 100
+        change_3 = (candles[-1] - candles[-2]) / candles[-2] * 100
 
-        # Определяем динамику по текущему (change_3) и предыдущему (change_2)
+        # Определяем динамику
         if abs(change_3) < 0.05:
             label = "Боковик"
         elif change_3 > 0:
@@ -325,17 +335,16 @@ def trend_adviser():
             else:
                 label = "Замедление падения"
 
-        # Порядок в сообщении: старое (change_1) | среднее (change_2) | новое (change_3)
-        lines.append(f"{sym}: **{change_1:+.2f}%** | **{change_2:+.2f}%** | **{change_3:+.2f}%** | {label}")
+        # Без звездочек, только чистые цифры и палочки
+        lines.append(f"{sym}: {change_1:+.2f}% | {change_2:+.2f}% | {change_3:+.2f}% | {label}")
 
-    now_ekb = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5)
     msg = f"📊 ТРЕНД 30М ({now_ekb.strftime('%H:%M')}):\n" + "\n".join(lines)
     
     send_telegram(msg)
     print("📊 Сводка отправлена!")
 
 # ==========================================================
-# ФОНОВЫЙ ПОТОК (Отправка каждые 30 минут)
+# ФОНОВЫЙ ПОТОК
 # ==========================================================
 def bg_alarm():
     print("🚀 Фоновый поток (1H) запущен!", flush=True)
@@ -347,8 +356,9 @@ def bg_alarm():
             if now - last_check >= 900:
                 check_ema_cross()
                 last_check = now
-            # Отправляем советник каждые 30 минут (1800 секунд)
-            if now - last_trend_msg >= 1800:
+            # Проверяем каждые 30 секунд, но отправка происходит только в 00 и 30 минут
+            # Поэтому используем условие внутри trend_adviser
+            if now - last_trend_msg >= 60:
                 trend_adviser()
                 last_trend_msg = now
             time.sleep(30)
@@ -366,3 +376,4 @@ if __name__ == "__main__":
     alarm_thread.start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+    
