@@ -16,7 +16,7 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
 MODEL = "deepseek/deepseek-v4-pro"
 
-# Главные монеты для анализа
+# Главные монеты для Советника
 MAIN_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
 
 NEWS_CACHE = {"last_update": 0, "headlines": [], "sentiment": "Не определён"}
@@ -27,6 +27,9 @@ RSS_FEEDS = [
     "https://cryptonews.com/news/feed/"
 ]
 
+# ==========================================================
+# ФУНКЦИИ ДЛЯ НОВОСТЕЙ
+# ==========================================================
 def fetch_rss_headlines():
     headlines = []
     for feed_url in RSS_FEEDS:
@@ -89,6 +92,9 @@ def update_news_cache():
         print("⚠️ Не удалось получить свежие новости.")
     return NEWS_CACHE["headlines"], NEWS_CACHE["sentiment"]
 
+# ==========================================================
+# БАЗОВЫЕ ФУНКЦИИ
+# ==========================================================
 app = Flask(__name__)
 
 def is_working_hours():
@@ -96,16 +102,20 @@ def is_working_hours():
     hour_ekb = (now_utc.hour + 5) % 24
     return (hour_ekb >= 14) or (hour_ekb < 3)
 
-def get_30m_candles(symbol):
+def get_30m_candles(symbol, limit=50):
     try:
-        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=30m&limit=5"
+        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=30m&limit={limit}"
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             candles = []
             for candle in data:
-                candles.append(float(candle[4]))
+                candles.append({
+                    'high': float(candle[2]),
+                    'low': float(candle[3]),
+                    'close': float(candle[4])
+                })
             return candles
         return None
     except:
@@ -118,8 +128,78 @@ def send_telegram(text):
     except:
         pass
 
+# Расчет ADX, DI+, DI-
+def calculate_adx_di(candles, period=14):
+    if len(candles) < period + 1:
+        return None, None, None
+
+    # Подготовка данных
+    tr_list = []
+    plus_dm_list = []
+    minus_dm_list = []
+
+    for i in range(1, len(candles)):
+        high = candles[i]['high']
+        low = candles[i]['low']
+        prev_high = candles[i-1]['high']
+        prev_low = candles[i-1]['low']
+        prev_close = candles[i-1]['close']
+
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        plus_dm = high - prev_high if (high - prev_high) > (prev_low - low) else 0
+        minus_dm = prev_low - low if (prev_low - low) > (high - prev_high) else 0
+
+        tr_list.append(tr)
+        plus_dm_list.append(plus_dm)
+        minus_dm_list.append(minus_dm)
+
+    # Сглаживание (Wilder)
+    tr_smooth = sum(tr_list[:period])
+    plus_dm_smooth = sum(plus_dm_list[:period])
+    minus_dm_smooth = sum(minus_dm_list[:period])
+
+    di_plus_values = []
+    di_minus_values = []
+    dx_values = []
+
+    di_plus = 100 * (plus_dm_smooth / tr_smooth) if tr_smooth > 0 else 0
+    di_minus = 100 * (minus_dm_smooth / tr_smooth) if tr_smooth > 0 else 0
+    di_plus_values.append(di_plus)
+    di_minus_values.append(di_minus)
+
+    if (di_plus + di_minus) > 0:
+        dx = 100 * abs(di_plus - di_minus) / (di_plus + di_minus)
+    else:
+        dx = 0
+    dx_values.append(dx)
+
+    for i in range(period, len(tr_list)):
+        tr_smooth = tr_smooth - (tr_smooth / period) + tr_list[i]
+        plus_dm_smooth = plus_dm_smooth - (plus_dm_smooth / period) + plus_dm_list[i]
+        minus_dm_smooth = minus_dm_smooth - (minus_dm_smooth / period) + minus_dm_list[i]
+
+        di_plus = 100 * (plus_dm_smooth / tr_smooth) if tr_smooth > 0 else 0
+        di_minus = 100 * (minus_dm_smooth / tr_smooth) if tr_smooth > 0 else 0
+        di_plus_values.append(di_plus)
+        di_minus_values.append(di_minus)
+
+        if (di_plus + di_minus) > 0:
+            dx = 100 * abs(di_plus - di_minus) / (di_plus + di_minus)
+        else:
+            dx = 0
+        dx_values.append(dx)
+
+    # ADX
+    adx = sum(dx_values[:period]) / period
+    adx_values = [adx]
+    for i in range(period, len(dx_values)):
+        adx = ((adx * (period - 1)) + dx_values[i]) / period
+        adx_values.append(adx)
+
+    return adx_values[-1], di_plus_values[-1], di_minus_values[-1]
+
 # ==========================================================
-# ТРЕНДОВЫЙ СОВЕТНИК (30 мин, 3 значения, точное время)
+# 1. ТРЕНДОВЫЙ СОВЕТНИК (30 мин, 3 значения, мягкие фразы, без дублей)
 # ==========================================================
 def trend_adviser():
     if not is_working_hours():
@@ -128,57 +208,125 @@ def trend_adviser():
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     now_ekb = now_utc + datetime.timedelta(hours=5)
 
-    # Отправляем только если минута = 00 или 30
-    if now_ekb.minute not in [0, 30]:
-        return
-
-    print("📊 Советник: отправляю сводку по 5 главным монетам (30 мин)...")
-
     lines = []
 
     for sym in MAIN_SYMBOLS:
-        candles = get_30m_candles(sym)
+        candles = get_30m_candles(sym, limit=5)
         if not candles or len(candles) < 4:
             lines.append(f"{sym}: Нет данных")
             continue
 
-        change_1 = (candles[-3] - candles[-4]) / candles[-4] * 100
-        change_2 = (candles[-2] - candles[-3]) / candles[-3] * 100
-        change_3 = (candles[-1] - candles[-2]) / candles[-2] * 100
+        # 4 свечи: [90 мин назад, 60 мин назад, 30 мин назад, сейчас]
+        change_1 = (candles[-3]['close'] - candles[-4]['close']) / candles[-4]['close'] * 100
+        change_2 = (candles[-2]['close'] - candles[-3]['close']) / candles[-3]['close'] * 100
+        change_3 = (candles[-1]['close'] - candles[-2]['close']) / candles[-2]['close'] * 100
 
+        # Определяем динамику (с мягкими формулировками)
         if abs(change_3) < 0.05:
             label = "Боковик"
         elif change_3 > 0:
             if change_2 < -0.05:
-                label = "Разворот вверх!"
+                label = "Возможен разворот вверх"
             elif change_3 >= change_2:
-                label = "Ускорение вверх"
+                label = "Импульс вверх усиливается"
             else:
-                label = "Замедление роста"
+                label = "Восходящий импульс ослабевает"
         else:
             if change_2 > 0.05:
-                label = "Разворот вниз!"
+                label = "Возможен разворот вниз"
             elif change_3 <= change_2:
-                label = "Ускорение вниз"
+                label = "Импульс вниз усиливается"
             else:
-                label = "Замедление падения"
+                label = "Нисходящий импульс ослабевает"
 
         lines.append(f"{sym}: {change_1:+.2f}% | {change_2:+.2f}% | {change_3:+.2f}% | {label}")
 
     msg = f"📊 ТРЕНД 30М ({now_ekb.strftime('%H:%M')}):\n" + "\n".join(lines)
+    send_telegram(msg)
+    print("📊 Советник отправлен!")
+
+# ==========================================================
+# 2. МАРШАЛ (BTC, 30 мин, ADX, DI+/DI-, точка разворота)
+# ==========================================================
+def marshal_btc():
+    if not is_working_hours():
+        return
+
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    now_ekb = now_utc + datetime.timedelta(hours=5)
+
+    candles = get_30m_candles("BTCUSDT", limit=50)
+    if not candles or len(candles) < 30:
+        return
+
+    # Текущий ADX, DI+, DI-
+    adx_current, di_plus, di_minus = calculate_adx_di(candles[:-1], period=14)
+    # ADX за прошлый период (чтобы показать, как изменилась сила)
+    adx_prev, _, _ = calculate_adx_di(candles[:-2], period=14)
+
+    if adx_current is None or di_plus is None or di_minus is None:
+        return
+
+    # Формируем направление
+    if di_plus > di_minus:
+        direction = f"ВВЕРХ (DI+ доминирует: DI+ {di_plus:.0f} / DI- {di_minus:.0f})"
+    else:
+        direction = f"ВНИЗ (DI- доминирует: DI+ {di_plus:.0f} / DI- {di_minus:.0f})"
+
+    # Формируем силу тренда (ADX)
+    if adx_prev is not None:
+        strength = f"ADX {adx_current:.0f} (было {adx_prev:.0f})"
+    else:
+        strength = f"ADX {adx_current:.0f}"
+
+    # Формируем прогноз длительности
+    if adx_current > 40:
+        duration = "Экстремальный тренд, может продержаться еще 1-2 часа."
+    elif adx_current > 25:
+        duration = "Сильный тренд, ожидается продолжение еще 2-3 часа."
+    elif adx_current > 20:
+        duration = "Умеренный тренд, может продлиться около 1 часа."
+    else:
+        duration = "Слабый тренд или боковик."
+
+    # Точка разворота
+    if di_plus > di_minus:
+        reversal_point = "Следи за пересечением DI+ и DI- (когда DI- станет больше DI+)"
+    else:
+        reversal_point = "Следи за пересечением DI+ и DI- (когда DI+ станет больше DI-)"
+
+    msg = f"📊 ТРЕНД BTC (Маршал) {now_ekb.strftime('%H:%M')}:\n"
+    msg += f"🧭 Направление: {direction}\n"
+    msg += f"💪 Сила тренда: {strength}\n"
+    msg += f"⏳ Прогноз длительности: {duration}\n"
+    msg += f"🔄 Точка разворота: {reversal_point}"
 
     send_telegram(msg)
-    print("📊 Сводка отправлена!")
+    print("🧠 Маршал (BTC) отправлен!")
 
 # ==========================================================
-# ФОНОВЫЙ ПОТОК (проверяем время каждые 30 секунд)
+# ФОНОВЫЙ ПОТОК (Каждые 30 минут, ровно в 00 и 30, без дублей)
 # ==========================================================
 def bg_alarm():
-    print("🚀 Фоновый поток Советника запущен!", flush=True)
+    print("🚀 Фоновый поток Советника и Маршала запущен!", flush=True)
+    last_sent_minute = ""
+
     while True:
         try:
-            trend_adviser()
-            time.sleep(30)  # Проверяем каждые 30 секунд, отправка только в 00 и 30 минут
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            now_ekb = now_utc + datetime.timedelta(hours=5)
+
+            # Отправляем строго в 00 и 30 минут, только один раз в эту минуту
+            if now_ekb.minute in [0, 30] and now_ekb.second < 30:
+                current_minute = now_ekb.strftime("%H:%M")
+                
+                if last_sent_minute != current_minute:
+                    # Запускаем оба компонента (Советник и Маршала)
+                    trend_adviser()
+                    marshal_btc()
+                    last_sent_minute = current_minute
+            
+            time.sleep(5) # Проверяем каждые 5 секунд, чтобы поймать ровно первую секунду в 00 и 30
         except Exception as e:
             print(f"⚠️ Ошибка: {e}")
             time.sleep(300)
