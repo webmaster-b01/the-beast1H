@@ -240,7 +240,7 @@ def calculate_adx_di(candles, period=14):
         adx_values.append(adx)
     return adx_values[-1], di_plus_values[-1], di_minus_values[-1]
 
-# Расчет EMA (für EMA 50 und EMA 200)
+# Расчет EMA 50
 def calculate_ema_simple(values, period):
     if len(values) < period:
         return None
@@ -289,7 +289,7 @@ def trend_adviser():
     print("📊 Советник отправлен!")
 
 # ==========================================================
-# МАРШАЛ (BTC, 30 мин, ADX, DI+/DI-, RSI, MACD, EMA 50, EMA 200)
+# МАРШАЛ (BTC, 30 мин, ADX, DI+/DI-, RSI, MACD, EMA 50)
 # ==========================================================
 def marshal_btc():
     if not is_working_hours():
@@ -342,20 +342,21 @@ def marshal_btc():
     else:
         macd_text = "MACD: Нет данных"
 
-    # EMA 50 und EMA 200 (auf 4H-Chart)
+    # EMA 50 (на 4-часовом графике)
     candles_4h = get_4h_candles("BTCUSDT", limit=150)
     if candles_4h:
         ema50_4h = calculate_ema_simple(candles_4h, 50)
-        ema200_4h = calculate_ema_simple(candles_4h, 200)
-        if ema50_4h is not None and ema200_4h is not None:
-            if ema50_4h > ema200_4h:
-                ema_text = "EMA 50 > EMA 200 (Долгосрочный тренд вверх)"
-            else:
-                ema_text = "EMA 50 < EMA 200 (Долгосрочный тренд вниз)"
+        current_price = candles_4h[-1]
+        if ema50_4h is not None and current_price > ema50_4h:
+            ema_text = "Линия 50: цена выше линии 50 (долгосрочный тренд вверх)"
+        elif ema50_4h is not None and current_price < ema50_4h:
+            ema_text = "Линия 50: цена ниже линии 50 (долгосрочный тренд вниз)"
+        elif ema50_4h is not None:
+            ema_text = "Линия 50: цена в районе линии 50 (переходный период)"
         else:
-            ema_text = "EMA 50 / EMA 200: Нет данных"
+            ema_text = "Линия 50: Нет данных"
     else:
-        ema_text = "EMA 50 / EMA 200: Нет данных"
+        ema_text = "Линия 50: Нет данных"
 
     msg = f"📊 ТРЕНД BTC (Маршал) {now_ekb.strftime('%H:%M')}:\n"
     msg += f"🧭 Направление: {direction}\n"
@@ -363,13 +364,13 @@ def marshal_btc():
     msg += f"⏳ Прогноз длительности: {duration}\n"
     msg += f"📉 RSI: {rsi_text}\n"
     msg += f"📈 MACD: {macd_text}\n"
-    msg += f"📊 EMA 50 / EMA 200: {ema_text}"
+    msg += f"📊 Линия 50: {ema_text}"
 
     send_telegram(msg)
     print("🧠 Маршал (BTC) отправлен!")
 
 # ==========================================================
-# ФОНОВЫЙ ПОТОК (Каждые 30 Minuten, genau um 00 und 30, ohne Duplikate)
+# ФОНОВЫЙ ПОТОК (Каждые 30 минут, ровно в 00 и 30, без дублей)
 # ==========================================================
 def bg_alarm():
     print("🚀 Фоновый поток Советника и Маршала запущен!", flush=True)
