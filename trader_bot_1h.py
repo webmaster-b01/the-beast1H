@@ -121,7 +121,7 @@ def get_30m_candles(symbol, limit=50):
     except:
         return None
 
-def get_1h_candles(symbol, limit=200):
+def get_1h_candles(symbol, limit=150):
     try:
         url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=1h&limit={limit}"
         headers = {"User-Agent": "Mozilla/5.0"}
