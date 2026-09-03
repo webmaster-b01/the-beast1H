@@ -121,9 +121,9 @@ def get_30m_candles(symbol, limit=50):
     except:
         return None
 
-def get_1h_candles(symbol, limit=150):
+def get_4h_candles(symbol, limit=150):
     try:
-        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=1h&limit={limit}"
+        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=4h&limit={limit}"
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
@@ -240,7 +240,7 @@ def calculate_adx_di(candles, period=14):
         adx_values.append(adx)
     return adx_values[-1], di_plus_values[-1], di_minus_values[-1]
 
-# Расчет EMA (для EMA 50 и EMA 200)
+# Расчет EMA (für EMA 50 und EMA 200)
 def calculate_ema_simple(values, period):
     if len(values) < period:
         return None
@@ -342,13 +342,13 @@ def marshal_btc():
     else:
         macd_text = "MACD: Нет данных"
 
-    # EMA 50 и EMA 200 (на 1-часовом графике)
-    candles_1h = get_1h_candles("BTCUSDT", limit=200)
-    if candles_1h:
-        ema50_1h = calculate_ema_simple(candles_1h, 50)
-        ema200_1h = calculate_ema_simple(candles_1h, 200)
-        if ema50_1h is not None and ema200_1h is not None:
-            if ema50_1h > ema200_1h:
+    # EMA 50 und EMA 200 (auf 4H-Chart)
+    candles_4h = get_4h_candles("BTCUSDT", limit=150)
+    if candles_4h:
+        ema50_4h = calculate_ema_simple(candles_4h, 50)
+        ema200_4h = calculate_ema_simple(candles_4h, 200)
+        if ema50_4h is not None and ema200_4h is not None:
+            if ema50_4h > ema200_4h:
                 ema_text = "EMA 50 > EMA 200 (Долгосрочный тренд вверх)"
             else:
                 ema_text = "EMA 50 < EMA 200 (Долгосрочный тренд вниз)"
@@ -369,7 +369,7 @@ def marshal_btc():
     print("🧠 Маршал (BTC) отправлен!")
 
 # ==========================================================
-# ФОНОВЫЙ ПОТОК (Каждые 30 минут, ровно в 00 и 30, без дублей)
+# ФОНОВЫЙ ПОТОК (Каждые 30 Minuten, genau um 00 und 30, ohne Duplikate)
 # ==========================================================
 def bg_alarm():
     print("🚀 Фоновый поток Советника и Маршала запущен!", flush=True)
