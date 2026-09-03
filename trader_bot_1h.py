@@ -121,6 +121,21 @@ def get_30m_candles(symbol, limit=50):
     except:
         return None
 
+def get_1h_candles(symbol, limit=200):
+    try:
+        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=1h&limit={limit}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            candles = []
+            for candle in data:
+                candles.append(float(candle[4]))
+            return candles
+        return None
+    except:
+        return None
+
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     try:
@@ -157,7 +172,6 @@ def calculate_macd(candles, fast=12, slow=26, signal=9):
     if len(candles) < slow + signal:
         return None, None
     closes = [c['close'] for c in candles]
-    # EMA расчет
     def ema(values, period):
         k = 2 / (period + 1)
         ema = values[0]
@@ -167,9 +181,7 @@ def calculate_macd(candles, fast=12, slow=26, signal=9):
     ema_fast = [ema(closes[:i+1], fast) for i in range(len(closes))]
     ema_slow = [ema(closes[:i+1], slow) for i in range(len(closes))]
     macd_line = [f - s for f, s in zip(ema_fast, ema_slow)]
-    # Сигнальная линия
     signal_line = ema(macd_line, signal)
-    # Отношение текущей MACD к сигнальной
     current_macd = macd_line[-1]
     current_signal = signal_line
     return current_macd, current_signal
@@ -228,6 +240,16 @@ def calculate_adx_di(candles, period=14):
         adx_values.append(adx)
     return adx_values[-1], di_plus_values[-1], di_minus_values[-1]
 
+# Расчет EMA (для EMA 50 и EMA 200)
+def calculate_ema_simple(values, period):
+    if len(values) < period:
+        return None
+    k = 2 / (period + 1)
+    ema = values[0]
+    for i in range(1, len(values)):
+        ema = (values[i] - ema) * k + ema
+    return ema
+
 # ==========================================================
 # ТРЕНДОВЫЙ СОВЕТНИК (30 мин, 3 значения, мягкие фразы)
 # ==========================================================
@@ -267,7 +289,7 @@ def trend_adviser():
     print("📊 Советник отправлен!")
 
 # ==========================================================
-# МАРШАЛ (BTC, 30 мин, ADX, DI+/DI-, RSI, MACD)
+# МАРШАЛ (BTC, 30 мин, ADX, DI+/DI-, RSI, MACD, EMA 50, EMA 200)
 # ==========================================================
 def marshal_btc():
     if not is_working_hours():
@@ -320,12 +342,28 @@ def marshal_btc():
     else:
         macd_text = "MACD: Нет данных"
 
+    # EMA 50 и EMA 200 (на 1-часовом графике)
+    candles_1h = get_1h_candles("BTCUSDT", limit=200)
+    if candles_1h:
+        ema50_1h = calculate_ema_simple(candles_1h, 50)
+        ema200_1h = calculate_ema_simple(candles_1h, 200)
+        if ema50_1h is not None and ema200_1h is not None:
+            if ema50_1h > ema200_1h:
+                ema_text = "EMA 50 > EMA 200 (Долгосрочный тренд вверх)"
+            else:
+                ema_text = "EMA 50 < EMA 200 (Долгосрочный тренд вниз)"
+        else:
+            ema_text = "EMA 50 / EMA 200: Нет данных"
+    else:
+        ema_text = "EMA 50 / EMA 200: Нет данных"
+
     msg = f"📊 ТРЕНД BTC (Маршал) {now_ekb.strftime('%H:%M')}:\n"
     msg += f"🧭 Направление: {direction}\n"
     msg += f"💪 Сила тренда: {strength}\n"
     msg += f"⏳ Прогноз длительности: {duration}\n"
     msg += f"📉 RSI: {rsi_text}\n"
-    msg += f"📈 MACD: {macd_text}"
+    msg += f"📈 MACD: {macd_text}\n"
+    msg += f"📊 EMA 50 / EMA 200: {ema_text}"
 
     send_telegram(msg)
     print("🧠 Маршал (BTC) отправлен!")
