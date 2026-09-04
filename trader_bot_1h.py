@@ -123,7 +123,7 @@ def get_30m_candles(symbol, limit=50):
 
 def get_4h_candles(symbol, limit=150):
     try:
-        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=4h&limit={limit}"
+        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=1h&limit={limit}"
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
