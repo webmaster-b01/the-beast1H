@@ -121,9 +121,9 @@ def get_30m_candles(symbol, limit=50):
     except:
         return None
 
-def get_1h_candles(symbol, limit=150):
+def get_4h_candles(symbol, limit=150):
     try:
-        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=1h&limit={limit}"
+        url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=4h&limit={limit}"
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
@@ -240,7 +240,7 @@ def calculate_adx_di(candles, period=14):
         adx_values.append(adx)
     return adx_values[-1], di_plus_values[-1], di_minus_values[-1]
 
-# Расчет EMA 50 (для 1-часового графике)
+# Расчет EMA 50
 def calculate_ema_simple(values, period):
     if len(values) < period:
         return None
@@ -342,16 +342,16 @@ def marshal_btc():
     else:
         macd_text = "MACD: Нет данных"
 
-    # EMA 50 (на 1-часовом графике)
-    candles_1h = get_1h_candles("BTCUSDT", limit=150)
-    if candles_1h:
-        ema50_1h = calculate_ema_simple(candles_1h, 50)
-        current_price = candles_1h[-1]
-        if ema50_1h is not None and current_price > ema50_1h:
+    # EMA 50 (на 4-часовом графике)
+    candles_4h = get_4h_candles("BTCUSDT", limit=150)
+    if candles_4h:
+        ema50_4h = calculate_ema_simple(candles_4h, 50)
+        current_price = candles_4h[-1]
+        if ema50_4h is not None and current_price > ema50_4h:
             ema_text = "Линия 50: цена выше линии 50 (долгосрочный тренд вверх)"
-        elif ema50_1h is not None and current_price < ema50_1h:
+        elif ema50_4h is not None and current_price < ema50_4h:
             ema_text = "Линия 50: цена ниже линии 50 (долгосрочный тренд вниз)"
-        elif ema50_1h is not None:
+        elif ema50_4h is not None:
             ema_text = "Линия 50: цена в районе линии 50 (переходный период)"
         else:
             ema_text = "Линия 50: Нет данных"
